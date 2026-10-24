@@ -8,3 +8,4 @@ scikit-learn
 pillow
 tqdm
 jupyter
+optuna
