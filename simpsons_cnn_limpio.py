@@ -634,55 +634,55 @@ tabla
 
 import torchvision.models as models
 
-modelo_resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+class ResNetSimpsons(nn.Module):
+    def __init__(self, dropout=0.5, preentrenada=True):
+        super(ResNetSimpsons, self).__init__()
+        self.normalizar = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        pesos = models.ResNet18_Weights.DEFAULT if preentrenada else None
+        self.red = models.resnet18(weights=pesos)
+        for param in self.red.parameters():
+            param.requires_grad = False
+        for param in self.red.layer4.parameters():
+            param.requires_grad = True
+        self.red.fc = nn.Sequential(nn.Dropout(p=dropout), nn.Linear(self.red.fc.in_features, NUM_CLASES))
 
-for param in modelo_resnet.parameters():
-    param.requires_grad = False
+    def forward(self, x):
+        return self.red(self.normalizar(x))
 
-num_caracteristicas = modelo_resnet.fc.in_features
-modelo_resnet.fc = nn.Sequential(
-    nn.Dropout(p=0.5),
-    nn.Linear(num_caracteristicas, NUM_CLASES)
-)
-modelo_resnet = modelo_resnet.to(device)
+torch.manual_seed(SEMILLA)
+loader_train, loader_val, loader_test = crear_dataloaders(64)
+modelo_resnet = ResNetSimpsons().to(device)
 
-normalizar_imagenet = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-X_train_norm = normalizar_imagenet(X_train)
-X_val_norm = normalizar_imagenet(X_val)
+parametros_totales = sum(p.numel() for p in modelo_resnet.parameters())
+parametros_entrenables = sum(p.numel() for p in modelo_resnet.parameters() if p.requires_grad)
+print(f'Parámetros totales: {parametros_totales:,} | Entrenables: {parametros_entrenables:,}')
 
-loader_train_resnet = DataLoader(TensorDataset(X_train_norm, y_train), batch_size=64, shuffle=True)
-loader_val_resnet = DataLoader(TensorDataset(X_val_norm, y_val), batch_size=64, shuffle=False)
-
-print("=" * 100)
-print("Entrenamiento de ResNet18 (Transfer Learning) con Data Augmentation")
-print("=" * 100)
 historial_resnet, mejor_epoca_resnet, tiempo_resnet = entrenar(
-    modelo_resnet, loader_train_resnet, loader_val_resnet,
-    lr=0.001, epocas=3 if MODO_PRUEBA else 40, paciencia=6, aumento=aumento
+    modelo_resnet, loader_train, loader_val, lr=0.0005,
+    epocas=3 if MODO_PRUEBA else 40, paciencia=6, aumento=aumento
 )
-
-graficas(historial_resnet, mejor_epoca_resnet, "C11_resnet18_transfer")
-torch.save(modelo_resnet.state_dict(), os.path.join(DIR_MODELOS, "C11_resnet18_transfer.pth"))
+graficas(historial_resnet, mejor_epoca_resnet, 'C11_resnet18_finetuning')
+torch.save(modelo_resnet.state_dict(), os.path.join(DIR_MODELOS, 'C11_resnet18_finetuning.pth'))
 
 resultados.append({
-    "Configuración": "C11_resnet18_transfer",
-    "Filtros": "ResNet18 (preentrenada)",
-    "Neuronas FC": f"({num_caracteristicas}, {NUM_CLASES})",
-    "Activación": "relu (residual)",
-    "Dropout": 0.5,
-    "Kernel": "3x3 (múltiple)",
-    "LR": 0.001,
-    "Lote": 64,
-    "Aumento": "Sí",
-    "Parámetros": sum(p.numel() for p in modelo_resnet.parameters()),
-    "Épocas": len(historial_resnet["perdida_train"]),
-    "Mejor época": mejor_epoca_resnet,
-    "Train Acc": round(historial_resnet["acc_train"][mejor_epoca_resnet - 1], 4),
-    "Val Loss": round(historial_resnet["perdida_val"][mejor_epoca_resnet - 1], 4),
-    "Val Acc": round(historial_resnet["acc_val"][mejor_epoca_resnet - 1], 4),
-    "Tiempo (s)": round(tiempo_resnet, 1),
+    'Configuración': 'C11_resnet18_finetuning',
+    'Filtros': 'ResNet18 preentrenada (layer4 + fc entrenables)',
+    'Neuronas FC': f'({modelo_resnet.red.fc[1].in_features}, {NUM_CLASES})',
+    'Activación': 'relu',
+    'Dropout': 0.5,
+    'Kernel': '3x3 / 7x7',
+    'LR': 0.0005,
+    'Lote': 64,
+    'Aumento': 'Sí',
+    'Parámetros': parametros_totales,
+    'Épocas': len(historial_resnet['perdida_train']),
+    'Mejor época': mejor_epoca_resnet,
+    'Train Acc': round(historial_resnet['acc_train'][mejor_epoca_resnet - 1], 4),
+    'Val Loss': round(historial_resnet['perdida_val'][mejor_epoca_resnet - 1], 4),
+    'Val Acc': round(historial_resnet['acc_val'][mejor_epoca_resnet - 1], 4),
+    'Tiempo (s)': round(tiempo_resnet, 1),
 })
-pd.DataFrame(resultados).to_csv(os.path.join(DIR_RESULTADOS, "experimentos.csv"), index=False)
+pd.DataFrame(resultados).to_csv(os.path.join(DIR_RESULTADOS, 'experimentos.csv'), index=False)
 pd.DataFrame(resultados)
 
 tabla_global = pd.DataFrame(resultados)
@@ -719,51 +719,26 @@ print(f"MEJOR MODELO SELECCIONADO: {mejor_cfg['Configuración']}")
 print(f"Val Acc: {mejor_cfg['Val Acc']:.2%} | Val Loss: {mejor_cfg['Val Loss']:.4f} | Época óptima: {mejor_cfg['Mejor época']}")
 print("=" * 80)
 
-from sklearn.metrics import classification_report, confusion_matrix
-import seaborn as sns
-
 nombre_mejor = mejor_cfg['Configuración']
 ruta_pesos = os.path.join(DIR_MODELOS, f'{nombre_mejor}.pth')
 
 if 'resnet' in nombre_mejor:
-    modelo_final = models.resnet18()
-    modelo_final.fc = nn.Sequential(nn.Dropout(0.5), nn.Linear(modelo_final.fc.in_features, NUM_CLASES))
-    modelo_final.load_state_dict(torch.load(ruta_pesos, map_location=device))
-    loader_test_final = DataLoader(TensorDataset(normalizar_imagenet(X_test), y_test), batch_size=64, shuffle=False)
+    modelo_final = ResNetSimpsons(preentrenada=False)
 else:
     todas_las_configs = CONFIGURACIONES + CONFIGURACIONES_AUMENTO + [config_optuna]
     cfg_sel = next(c for c in todas_las_configs if c['nombre'] == nombre_mejor)
     modelo_final = ConvNet(cfg_sel['filtros'], cfg_sel['neuronas'], cfg_sel['activacion'],
                            cfg_sel['dropout'], cfg_sel['tam_kernel'])
-    modelo_final.load_state_dict(torch.load(ruta_pesos, map_location=device))
-    loader_test_final = loader_test
-
+modelo_final.load_state_dict(torch.load(ruta_pesos, map_location=device))
 modelo_final = modelo_final.to(device)
 
-criterio = nn.CrossEntropyLoss()
-perdida_test, acc_test, y_test_real, y_test_pred = evaluar(modelo_final, loader_test_final, criterio)
+perdida_test, acc_test, y_test_real, y_test_pred = evaluar(modelo_final, loader_test, nn.CrossEntropyLoss())
 
 print('=' * 80)
 print(f'EVALUACIÓN DEFINITIVA EN EL CONJUNTO DE TEST ({nombre_mejor})')
-print(f'Exactitud en Test: {acc_test:.2%}  (Objetivo: >= 85.00%)')
-print(f'Pérdida en Test:    {perdida_test:.4f}')
-if acc_test >= 0.85:
-    print('✅ OBJETIVO SUPERADO CON ÉXITO')
-else:
-    print('⚠️ Exactitud por debajo del 85%')
+print(f'Exactitud en test: {acc_test:.2%}  (objetivo: >= 85%)')
+print(f'Pérdida en test:   {perdida_test:.4f}')
 print('=' * 80)
-
-print('\nInforme detallado de clasificación por personaje:')
-print(classification_report(y_test_real, y_test_pred, target_names=NOMBRES, digits=4))
-
-cm_test = confusion_matrix(y_test_real, y_test_pred)
-plt.figure(figsize=(10, 8))
-sns.heatmap(cm_test, annot=True, fmt='d', cmap='Blues',
-            xticklabels=NOMBRES, yticklabels=NOMBRES)
-plt.title(f'Matriz de Confusión en Test – {nombre_mejor} ({acc_test:.1%})')
-plt.xlabel('Predicción del modelo')
-plt.ylabel('Clase real')
-plt.xticks(rotation=45, ha='right')
-plt.tight_layout()
-plt.savefig(os.path.join(DIR_RESULTADOS, 'matriz_confusion_test.png'), dpi=150)
-plt.show()
+print()
+print(classification_report(y_test_real, y_test_pred, target_names=NOMBRES, digits=3))
+matriz_confusion(y_test_real, y_test_pred, f'Matriz de confusión – test ({nombre_mejor}, {acc_test:.1%})', 'matriz_confusion_test.png')
